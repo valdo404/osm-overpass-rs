@@ -6,7 +6,13 @@ use reqwest::{
 };
 use serde::de::DeserializeOwned;
 
-static CLIENT: LazyLock<Client> = LazyLock::new(|| Client::new());
+/// The `User-Agent` of the shared static HTTP client. The official API server refuses requests
+/// that do not identify themselves (`406 Not Acceptable`).
+pub const DEFAULT_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
+static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    Client::builder().user_agent(DEFAULT_USER_AGENT).build().unwrap_or_default()
+});
 
 /// The URL of the official API server.
 pub const DEFAULT_URL: &str = "https://overpass-api.de/api/interpreter";
@@ -59,7 +65,8 @@ impl Default for OverpassServer {
 }
 
 impl OverpassServer {
-    /// A server at the given `interpreter` URL, with the shared static HTTP client.
+    /// A server at the given `interpreter` URL, with the shared static HTTP client (which
+    /// identifies itself as [DEFAULT_USER_AGENT]).
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             client: Cow::Borrowed(&CLIENT),
@@ -250,7 +257,19 @@ mod test {
         assert_eq!(request.split_once("\r\n\r\n").unwrap().1, oql);
         assert_eq!(header(&request, "content-length"), Some(oql.len().to_string().as_str()));
         assert_eq!(header(&request, "content-type"), None);
+        assert_eq!(header(&request, "user-agent"), Some(DEFAULT_USER_AGENT));
+    }
+
+    #[tokio::test]
+    async fn a_given_client_sends_only_its_own_headers() {
+        let (url, request) = serve_once(200, ANSWER).await;
+
+        OverpassServer::new(url).with_client(Client::new())
+            .evaluate_oql("[out:json];node(1);out;").await.unwrap();
+
+        let request = request.await.unwrap();
         assert_eq!(header(&request, "user-agent"), None);
+        assert_eq!(header(&request, "content-type"), None);
     }
 
     #[tokio::test]
