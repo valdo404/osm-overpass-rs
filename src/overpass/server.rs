@@ -144,10 +144,16 @@ impl OverpassServer {
     /// deserializable type.
     pub async fn evaluate_oql_as<T: DeserializeOwned>(&self, oql: impl Into<String>) -> Result<T, OverpassError> {
         let res = self.send_oql(oql).await?;
+        let status = res.status();
 
         match res.bytes().await {
             Err(e) => Err(OverpassError::Request(e)),
-            Ok(b) => serde_json::from_slice(&b).map_err(|e| OverpassError::Parse(e)),
+            // The status is not looked at first: a JSON answer is an answer. Without one, an
+            // error status says more than the position where the parser gave up.
+            Ok(b) => serde_json::from_slice(&b).map_err(|e| match status.is_success() {
+                true => OverpassError::Parse(e),
+                false => OverpassError::Other(format!("HTTP {status}")),
+            }),
         }
     }
 }
@@ -330,11 +336,22 @@ mod test {
     }
 
     #[tokio::test]
-    async fn an_answer_that_is_not_json_is_a_parse_error() {
-        let (url, _request) = serve_once(504, "<html>Gateway Timeout</html>").await;
-
+    async fn an_answer_that_is_not_json_is_an_error() {
+        let (url, _request) = serve_once(200, "<html>not what was asked</html>").await;
         let err = OverpassServer::new(url).evaluate_oql("[out:json];node(1);out;").await.unwrap_err();
         assert!(matches!(err, OverpassError::Parse(_)), "{err:?}");
+
+        let (url, _request) = serve_once(504, "<html>Gateway Timeout</html>").await;
+        let err = OverpassServer::new(url).evaluate_oql("[out:json];node(1);out;").await.unwrap_err();
+        assert!(matches!(&err, OverpassError::Other(e) if e.starts_with("HTTP 504")), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_json_answer_is_read_whatever_the_status() {
+        let (url, _request) = serve_once(429, ANSWER).await;
+
+        let res = OverpassServer::new(url).evaluate_oql("[out:json];node(1);out;").await.unwrap();
+        assert_eq!(res.elements.len(), 2);
     }
 
     #[tokio::test]
