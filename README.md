@@ -67,6 +67,37 @@ let res = OverpassServer::default().evaluate(&dec_query).await.unwrap();
 assert!(res.elements.iter().any(|e| matches!(e.tag("name"), Some("Space Needle"))));
 ```
 
+## Raw OverpassQL and server settings
+
+Whatever the query types cannot express yet can be sent as an OverpassQL string written by hand,
+and the server, the HTTP client, the timeout and the request headers are yours to choose:
+
+```rust
+use reqwest::header::HeaderValue;
+
+let server = OverpassServer::new("https://overpass-api.de/api/interpreter")
+    .with_client(reqwest::Client::new())
+    .with_timeout(Duration::from_secs(60))
+    .with_user_agent(HeaderValue::from_static("my-app/1.0"));
+
+let oql = r#"[out:json];relation["name"="Seattle"]["boundary"="administrative"];out center tags;"#;
+
+// As elements: ways and relations carry their `center` when the query asks for it.
+let res = server.evaluate_oql(oql).await.unwrap();
+for element in &res.elements {
+    println!("{:?} is at {:?}", element.tag("name"), element.position());
+}
+
+// Or as the JSON document the server sent.
+let json = server.evaluate_oql_json(oql).await.unwrap();
+println!("{}", json["elements"][0]["center"]);
+```
+
+## Cargo features
+
+The default features are those of [reqwest] plus `deflate`. With `default-features = false` no TLS
+backend is selected: enable `rustls` or `native-tls`, or let the rest of your application decide.
+
 ## Language Support
 
 * Settings
